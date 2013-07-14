@@ -1,26 +1,48 @@
 var http = require('http');
+var rangeParser = require('range-parser');
 var numeral = require('numeral');
 var peerflix = require('./index');
+
+var pipeline = function(from, to) {
+	from.pipe(to);
+	to.on('close', function() {
+		from.destroy();
+	});
+};
 
 peerflix(process.argv[2], function(err, client) {
 	if (err) throw err;
 
 	var server = http.createServer(function(request, response) {
-		request.connection.setTimeout(15*60*1000);
+		request.connection.setTimeout(30*60*1000);
 
 		if (/^\/\d+$/.test(request.url)) {
-			var stream = client.stream(parseInt(request.url.slice(1), 10));
+			var i = parseInt(request.url.slice(1), 10);
+			var range = request.headers.range;
+			var file = client.files[i];
+			range = range && rangeParser(file.length, range)[0];
 
-			if (!stream) {
+			if (!file) {
 				response.writeHead(404);
 				response.end();
 				return;
 			}
 
-			stream.pipe(response);
-			response.on('close', function() {
-				stream.destroy();
-			});
+			response.setHeader('Accept-Ranges', 'bytes');
+
+			if (!range) {
+				response.setHeader('Content-Length', file.length);
+				if (request.method === 'HEAD') return response.end();
+				pipeline(client.stream(i), response);
+				return;
+			}
+
+			response.statusCode = 206;
+			response.setHeader('Content-Length', range.end - range.start + 1);
+			response.setHeader('Content-Range', 'bytes '+range.start+'-'+range.end+'/'+file.length);
+
+			if (request.method === 'HEAD') return response.end();
+			pipeline(client.stream(i, range), response);
 			return;
 		}
 
