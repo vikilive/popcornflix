@@ -16,11 +16,15 @@
     "readable-stream": "~1.0.2",
     "read-torrent": "~0.1.0",
     "network-address": "0.0.4",
-    "peer-wire-protocol": "~0.3.6",
-    "peer-wire-swarm": "~0.0.7",
-    "part-file": "~0.1.0",
+    "peer-wire-swarm": "~0.2.0",
     "optimist": "~0.3.5",
     "speedometer": "~0.1.1",
-    "once": "~1.1.1"
+    "once": "~1.1.1",
+    "thunky": "~0.1.0",
+    "compact2string": "~1.0.0",
+    "bisection": "0.0.3",
+    "mkdirp": "~0.3.5",
+    "bncode": "~0.2.3",
+    "rimraf": "~2.2.0"
   }
 }

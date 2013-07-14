@@ -1,247 +1,226 @@
-var peerSwarm = require('peer-wire-swarm');
-var wire = require('peer-wire-protocol');
-var hat = require('hat');
-var path = require('path');
-var os = require('os');
-var fs = require('fs');
-var numeral = require('numeral');
-var bitfield = require('bitfield');
+var peerWireSwarm = require('peer-wire-swarm');
 var readTorrent = require('read-torrent');
-var optimist = require('optimist');
 var speedometer = require('speedometer');
+var hat = require('hat');
 var once = require('once');
-var net = require('net');
-var createStorage = require('./storage');
-var createServer = require('./server');
+var dht = require('./lib/dht');
+var pieceBuffer = require('./lib/piece-buffer');
+var pieceStream = require('./lib/piece-stream');
+var storage = require('./lib/storage');
+var selector = require('./lib/selector');
 
-module.exports = function(filename, opts, ready) {
-	var peerflix = {}; // peerflix handle
-	var options = opts || {};
+var BLOCK_SIZE = 16*1024; // used for finding offset prio
+var MIN_SPEED =  5*1024;
+var CHOKE_TIMEOUT = 5000;
+var PIECE_TIMEOUT = 30000;
+var MIN_PEERS = 0;
+var MAX_QUEUED = 5;
 
-	var MAX_PEERS = options.connections;
-	var MIN_PEERS = 0;
-	var MAX_QUEUED = 5;
+var limit = function(fn) {
+	var lock = 0;
 
-	var BLOCK_SIZE = 16*1024; // used for finding offset prio
-	var MIN_SPEED =  5*1024;
-	var CHOKE_TIMEOUT = 5000;
-	var PIECE_TIMEOUT = 30000;
-	var FAST_PIECE_TIMEOUT = 10000;
-	var HANDSHAKE_TIMEOUT = 5000;
-	var PEER_ID = '-PF0005-'+hat(48);
-
-	var biggest = function(torrent) {
-		return torrent.files.reduce(function(biggest, file) {
-			return biggest.length > file.length ? biggest : file;
-		});
+	var reset = function() {
+		if (lock > 1) process.nextTick(run);
+		lock = 0;
 	};
 
-	var noop = function() {};
+	var run = function() {
+		lock++;
+		if (lock > 1) return;
+		setTimeout(reset, 1000);
+		fn();
+	};
 
-	readTorrent(filename, function(err, torrent) {
-		if (err) return ready(err);
+	return run;
+};
 
-		peerflix.torrent = torrent;
-		var selected = peerflix.selected = (typeof(options.index)=='number') ? torrent.files[options.index] : biggest(torrent);
-		var destination = peerflix.destination = options.path || path.join(os.tmpDir(), torrent.infoHash+'.'+selected.offset);
-		var storage = peerflix.storage = createStorage(torrent, selected, { destination:destination });
-		var server = peerflix.server = createServer(storage, selected, { buffer:options.buffer && numeral().unformat(options.buffer), port: options.port });
-		var peers  = peerflix.peers = [];
+module.exports = function(url, options, callback) {
+	if (typeof options === 'function') return module.exports(url, {}, options);
 
-		var speed = peerflix.speed = speedometer();
-		peerflix.uploaded = 0;
-		peerflix.downloaded = 0;
-		peerflix.resyncs = 0;
+	readTorrent(url, function(err, torrent) {
+		if (err) return callback(err);
 
-		var have = bitfield(torrent.pieces.length);
-		var requesting = {};
+		var speed = speedometer();
+		var peerId = '-PF0006-'+hat(48);
+		var swarm = peerWireSwarm(torrent.infoHash, peerId, options);
+		var table = dht(torrent.infoHash);
+		var drive = storage('/tmp/peerflix', torrent, options);
+		var streams = [];
 
-		storage.on('readable', function(i) {
-			delete requesting[i];
-			have.set(i);
-			peers.forEach(function(peer) {
-				peer.have(i);
+		// TODO: merge the 2 below into drive
+		var select = selector(drive);
+		var buffers = torrent.pieces.map(function(hash, i) {
+			return pieceBuffer(i === torrent.pieces.length-1 ? torrent.lastPieceLength : torrent.pieceLength);
+		});
+
+		drive.on('readable', function(i) {
+			streams.forEach(function(stream) {
+				stream.update();
+			});
+			swarm.wires.forEach(function(wire) {
+				wire.have(i);
 			});
 		});
 
-		var remove = function(arr, item) {
-			if (!arr) return false;
-			var i = arr.indexOf(item);
-			if (i === -1) return false;
-			arr.splice(i, 1);
-			return true;
-		};
-		var calcOffset = function(me) {
-			var speed = me.speed();
-			var time = MAX_QUEUED * BLOCK_SIZE / (speed || 1);
-			var max = storage.missing.length > 60 ? storage.missing.length - 30 : storage.missing.length - 1;
-			var data = 0;
+		swarm.on('download', function(downloaded) {
+			speed(downloaded);
+		});
 
-			if (speed < MIN_SPEED) return max;
+		table.on('peer', function(peer) {
+			swarm.add(peer);
+		});
 
-			peers.forEach(function(peer) {
-				if (!peer.peerPieces[storage.missing[0]]) return;
-				if (peer.peerChoking) return;
-				if (me === peer || peer.speed() < speed) return;
-				data += peer.speed() * time;
-			});
-
-			return Math.min(Math.floor(data / torrent.pieceLength), max);
-		};
-		var resync = function(offset) {
-			var piece = server.position + offset;
-
-			if (!requesting[piece]) return;
-			if (storage.missing.length < 10) return;
-
-			requesting[piece].forEach(function(peer) {
-				if (peer.speed() > 2*BLOCK_SIZE) return;
-				if (calcOffset(peer) <= offset) return;
-				while (remove(requesting[piece], peer));
-				peer.cancel();
-				peerflix.resyncs++;
+		var turbo = function(i) {
+			return streams.some(function(stream) {
+				return i-stream.target < 3;
 			});
 		};
-		var lastResync = 0;
-		var resyncAll = function() {
-			if (Date.now() - lastResync < 2000) return;
-			lastResync = Date.now();
-			for (var i = 0; i < 2; i++) {
-				resync(i);
-			}
-		};
 
-		var update = function() {
-			peers.sort(function(a,b) {
-				return b.downloaded - a.downloaded;
+		var override = function(piece, wire) {
+			var slowest = wire;
+
+			piece.select(wire, function(owner) {
+				if (owner.speed() < slowest.speed()) slowest = owner;
 			});
 
-			resyncAll();
+			var offset = piece.select(wire, function(owner) {
+				if (owner === slowest && wire.speed() / owner.speed() > 1.5) {
+					console.log('TURBO OVERRIDE: '+owner.speed()+' vs '+wire.speed());
+				}
+			});
 
-			peers.forEach(function(peer) {
-				if (peer.peerChoking) return;
+//			if (offset > -1) console.log('OVERRIDE');
 
-				var select = function(force) {
-					storage.missing.slice(calcOffset(peer)).some(function(piece) {
-						if (peer.requests >= MAX_QUEUED) return true;
-						if (!peer.peerPieces[piece]) return;
+			return offset;
+		};
 
-						var offset = storage.select(piece, force);
-						if (offset === -1) return;
+		var update = limit(function() {
+			if (!drive.missing) return;
 
-						requesting[piece] = requesting[piece] || [];
-						requesting[piece].push(peer);
+			swarm.wires.forEach(function onwire(wire) {
+				if (wire.peerChoking) return;
 
-						peer.request(piece, offset, storage.sizeof(piece, offset), function(err, buffer) {
-							remove(requesting[piece], peer);
-							process.nextTick(update);
-							if (err) return storage.deselect(piece, offset);
-							storage.write(piece, offset, buffer);
+				var prio = wire.downloaded ? 0 : 20;
+
+				select.next(function(i) {
+					if (prio-- > 0) return;
+					if (wire.requests >= MAX_QUEUED) return true;
+					if (!wire.peerPieces[i] || !buffers[i]) return;
+
+					var fast = turbo(i);
+					var piece = buffers[i];
+					var offset = piece.select(wire);
+
+					if (offset === -1 && turbo(i) && wire.speed() > MIN_SPEED) offset = override(piece, wire);
+					if (offset === -1) return;
+
+					wire.request(i, offset, piece.sizeof(offset), function(err, buffer) {
+						if (err) return piece.deselect(offset, wire);
+
+						process.nextTick(function() {
+							onwire(wire);
+						});
+
+						if (!piece.write(offset, buffer)) return;
+
+						drive.write(i, piece.buffer, function(err) {
+							if (err) return piece.reset();
+							buffers[i] = null;
 						});
 					});
-				};
 
-				select();
-				if (!peer.requests && storage.missing.length < 30) select(true);
+					return true;
+				});
 			});
-		};
+		});
 
-		var onconnection = function(connection, id, address) {
-			if (!storage.missing.length) return;
+		swarm.on('wire', function(wire) {
+			if (!drive.missing) return;
 
-			var protocol = wire();
+			var ontimeout = function() {
+				wire.destroy();
+			};
 
-			connection.pipe(protocol).pipe(connection);
-
-			var ontimeout = connection.destroy.bind(connection);
-			var timeout = setTimeout(ontimeout, HANDSHAKE_TIMEOUT);
-
-			protocol.once('handshake', function() {
-				clearTimeout(timeout);
-
-				peers.push(protocol);
-
-				var onclose = once(function() {
-					clearTimeout(timeout);
-					peers.splice(peers.indexOf(protocol), 1);
-					if (protocol.downloaded) sw.reconnect(address);
-					process.nextTick(update);
-				});
-
-				connection.on('close', onclose);
-				connection.on('error', onclose);
-				protocol.once('finish', onclose);
-
-				protocol.on('unchoke', update);
-				protocol.on('have', update);
-
-				var onchoketimeout = function() {
-					if (peers.length > MIN_PEERS && sw.queued > 2 * (MAX_PEERS - peers.length)) return ontimeout();
-					timeout = setTimeout(onchoketimeout, CHOKE_TIMEOUT);
-				};
-
-				protocol.on('choke', function() {
-					clearTimeout(timeout);
-					timeout = setTimeout(onchoketimeout, CHOKE_TIMEOUT);
-				});
-
-				protocol.on('unchoke', function() {
-					clearTimeout(timeout);
-				});
-
-				protocol.once('interested', function() {
-					protocol.unchoke();
-				});
-
+			var onchoketimeout = function() {
+				if (swarm.wires.length > MIN_PEERS && swarm.queued > 2 * (swarm.size - swarm.wires.length)) return ontimeout();
 				timeout = setTimeout(onchoketimeout, CHOKE_TIMEOUT);
-				protocol.setKeepAlive();
+			};
+
+			wire.speed = speedometer();
+
+			wire.on('download', wire.speed);
+			wire.on('have', update);
+			wire.on('unchoke', update);
+
+			wire.on('end', function() {
+				clearTimeout(timeout);
+				if (wire.downloaded) swarm.prioritize(wire);
+				update();
 			});
 
-
-			protocol.id = id;
-			protocol.handshake(torrent.infoHash, PEER_ID);
-			protocol.bitfield(have);
-			protocol.interested();
-			protocol.speed = speedometer();
-
-			protocol.setTimeout(PIECE_TIMEOUT, function() {
-				protocol.destroy();
+			wire.on('choke', function() {
+				clearTimeout(timeout);
+				timeout = setTimeout(onchoketimeout, CHOKE_TIMEOUT);
 			});
 
-			protocol.on('download', function(bytes) {
-				peerflix.downloaded += bytes;
-				protocol.speed(bytes);
-				speed(bytes);
+			wire.on('unchoke', function() {
+				clearTimeout(timeout);
 			});
 
-			protocol.on('upload', function(bytes) {
-				peerflix.uploaded += bytes;
+			wire.on('request', function(part, offset, length, callback) {
+				drive.read(part, function(err, buffer) {
+					if (err) return callback(err);
+					callback(null, buffer.slice(offset, offset+length));
+				});
 			});
 
-			protocol.on('request', storage.read);
+			wire.once('interested', function() {
+				wire.unchoke();
+			});
+
+			timeout = setTimeout(onchoketimeout, CHOKE_TIMEOUT);
+
+			wire.setTimeout(PIECE_TIMEOUT, function() {
+				wire.destroy();
+			});
+
+			wire.setKeepAlive();
+			wire.bitfield(drive.verified);
+			wire.interested();
+		});
+
+		var client = {};
+
+		client.speed = speed;
+		client.swarm = swarm;
+		client.files = torrent.files;
+		client.wires = swarm.wires;
+		client.streams = streams;
+		client.select = select;
+
+		client.missing = function(num) {
+			return select.grap(num || 1);
 		};
 
-		if (options.fastpeers) {
-			if (!Array.isArray(options.fastpeers)) options.fastpeers = options.fastpeers.split(',');
-			options.fastpeers.forEach(function(peer) {
-				var socket = net.connect(peer.split(':')[1], peer.split(':')[0]);
-				socket.on('connect', function() {
-					onconnection(socket, peer, peer);
-				});
-				socket.on('error', noop);
+		client.stream = function(index, options) {
+			options = options || {};
+			var file = torrent.files[index];
+			if (!file) return null;
+
+			var start = options.start || 0;
+			var end = typeof options.end === 'number' ? options.end : file.length-1;
+			var stream = pieceStream(drive, start+file.offset, end-start+1);
+			var unprio = select.prioritize(stream.target);
+
+			streams.push(stream);
+			stream.once('close', function() {
+				streams.splice(streams.indexOf(stream), 1);
+				unprio();
 			});
-		}
 
-		if (options.hasOwnProperty("dht") ? options.dht : true) {
-			var sw = peerflix.swarm = peerSwarm(torrent.infoHash, {maxSize:MAX_PEERS});
-			sw.on('connection', onconnection);
-			sw.listen();
-		}
+			return stream;
+		};
 
-		ready(null, peerflix);
+		callback(null, client);
 	});
-
-	peerflix.clearCache = function() {
-		if (fs.existsSync(peerflix.destination)) fs.unlinkSync(peerflix.destination);
-	};
-}
+};
