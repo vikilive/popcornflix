@@ -53,8 +53,8 @@ peerflix(process.argv[2], function(err, client) {
 		}
 
 		response.end(JSON.stringify({
-			prioritized: client.missing(10),
-			list: client.select.list,
+			prioritized: client.missing(5),
+			piece: client.torrent.pieceLength,
 			speed: client.speed(),
 			downloaded: client.swarm.downloaded,
 			uploaded: client.swarm.uploaded,

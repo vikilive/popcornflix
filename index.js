@@ -124,9 +124,8 @@ module.exports = function(url, options, callback) {
 
 						if (!piece.write(offset, buffer)) return;
 
-						drive.write(i, piece.buffer, function(err) {
-							if (err) return piece.reset();
-							buffers[i] = null;
+						drive.write(i, piece.flush(), function(err) {
+							buffers[i] = err ? pieceBuffer(piece.length) : null;
 						});
 					});
 
@@ -199,8 +198,10 @@ module.exports = function(url, options, callback) {
 		client.streams = streams;
 		client.select = select;
 		client.drive = drive;
+		client.torrent = torrent;
 
 		client.destroy = function(callback) {
+			swarm.destroy();
 			drive.destroy(callback);
 		};
 
