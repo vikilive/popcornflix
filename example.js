@@ -10,6 +10,13 @@ peerflix(process.argv[2], function(err, client) {
 
 		if (/^\/\d+$/.test(request.url)) {
 			var stream = client.stream(parseInt(request.url.slice(1), 10));
+
+			if (!stream) {
+				response.writeHead(404);
+				response.end();
+				return;
+			}
+
 			stream.pipe(response);
 			response.on('close', function() {
 				stream.destroy();

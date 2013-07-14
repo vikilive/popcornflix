@@ -85,7 +85,8 @@ module.exports = function(url, options, callback) {
 
 			var offset = piece.select(wire, function(owner) {
 				if (owner === slowest && wire.speed() / owner.speed() > 1.5) {
-					console.log('TURBO OVERRIDE: '+owner.speed()+' vs '+wire.speed());
+					console.log('TURBO OVERRIDE: '+owner.speed()+' vs '+wire.speed()+'  -  '+wire.remoteAddress);
+					return true;
 				}
 			});
 
