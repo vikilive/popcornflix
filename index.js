@@ -72,7 +72,7 @@ module.exports = function(url, options, callback) {
 
 		var turbo = function(i) {
 			return streams.some(function(stream) {
-				return i-stream.target < 3;
+				return i-stream.target < 3 && i-stream.target >= 0;
 			});
 		};
 
@@ -84,7 +84,7 @@ module.exports = function(url, options, callback) {
 			});
 
 			var offset = piece.select(wire, function(owner) {
-				if (owner === slowest && wire.speed() / owner.speed() > 1.5) {
+				if (owner === slowest && wire.speed() / owner.speed() >= 2) {
 					console.log('TURBO OVERRIDE: '+owner.speed()+' vs '+wire.speed()+'  -  '+wire.remoteAddress);
 					return true;
 				}
