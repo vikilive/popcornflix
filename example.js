@@ -63,8 +63,11 @@ peerflix(process.argv[2], function(err, client) {
 			wires: client.wires.map(function(wire) {
 				return {
 					address: wire.remoteAddress,
+					speed: wire.speed(),
 					downloaded: wire.downloaded,
-					speed: wire.speed()
+					uploaded: wire.uploaded,
+					peerChoking: wire.peerChoking,
+					choking: wire.choking
 				};
 			}),
 			files: client.files.map(function(file, i) {

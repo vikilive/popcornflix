@@ -179,7 +179,7 @@ module.exports = function(url, options, callback) {
 				wire.unchoke();
 			});
 
-			timeout = setTimeout(onchoketimeout, CHOKE_TIMEOUT);
+			var timeout = setTimeout(onchoketimeout, CHOKE_TIMEOUT);
 
 			wire.setTimeout(PIECE_TIMEOUT, function() {
 				wire.destroy();
