@@ -198,6 +198,11 @@ module.exports = function(url, options, callback) {
 		client.wires = swarm.wires;
 		client.streams = streams;
 		client.select = select;
+		client.drive = drive;
+
+		client.destroy = function(callback) {
+			drive.destroy(callback);
+		};
 
 		client.missing = function(num) {
 			return select.grap(num || 1);

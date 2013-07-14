@@ -13,6 +13,12 @@ var pipeline = function(from, to) {
 peerflix(process.argv[2], function(err, client) {
 	if (err) throw err;
 
+	process.on('SIGINT', function() {
+		client.destroy(function() {
+			process.exit(0);
+		});
+	});
+
 	var server = http.createServer(function(request, response) {
 		request.connection.setTimeout(30*60*1000);
 
