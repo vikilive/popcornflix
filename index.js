@@ -135,8 +135,6 @@ module.exports = function(url, options, callback) {
 		});
 
 		swarm.on('wire', function(wire) {
-			if (!drive.missing) return;
-
 			var ontimeout = function() {
 				wire.destroy();
 			};
@@ -147,6 +145,8 @@ module.exports = function(url, options, callback) {
 			};
 
 			wire.speed = speedometer();
+
+			if (!drive.missing) return;
 
 			wire.on('download', wire.speed);
 			wire.on('have', update);
