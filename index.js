@@ -194,7 +194,6 @@ module.exports = function(url, options, callback) {
 		client.speed = speed;
 		client.swarm = swarm;
 		client.files = torrent.files;
-		client.wires = swarm.wires;
 		client.streams = streams;
 		client.select = select;
 		client.drive = drive;

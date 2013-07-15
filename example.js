@@ -60,7 +60,7 @@ peerflix(process.argv[2], function(err, client) {
 			uploaded: client.swarm.uploaded,
 			streams: client.streams.length,
 			queued: client.swarm.queued,
-			wires: client.wires.map(function(wire) {
+			wires: client.swarm.wires.map(function(wire) {
 				return {
 					address: wire.remoteAddress,
 					speed: wire.speed(),
