@@ -17,5 +17,5 @@ using `--vlc` will open the file in vlc when it's ready to stream.
 simply open this address in vlc or similar to start viewing the file. If the torrent contains multiple files `peerflix` will choose the biggest one.
 
 To get a full list of available options run
-
+ 
 	peerflix --help
